@@ -1,0 +1,765 @@
+---
+title: ""
+author: ""
+date: ""
+
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: false
+    toc_depth: 4
+    number_sections: true
+    fig_caption: true
+    keep_tex: true
+    
+bibliography: references.bib
+reference-section-title: ""
+
+fontsize: 12pt
+mainfont: "Times New Roman"
+
+geometry:
+  - margin=1in
+
+linkcolor: blue
+urlcolor: blue
+
+header-includes:
+  - \usepackage{setspace}
+  - \onehalfspacing
+
+  - \usepackage{graphicx}
+  - \usepackage{float}
+  - \usepackage{booktabs}
+  - \usepackage{longtable}
+  - \usepackage{array}
+  - \usepackage{multirow}
+  - \usepackage{caption}
+  - \captionsetup{font=small,labelfont=bf}
+
+  - \usepackage{xcolor}
+  - \usepackage{titlesec}
+
+  - \titleformat{\section}{\Large\bfseries\color{blue!60!black}}{\thesection}{1em}{}
+  - \titleformat{\subsection}{\large\bfseries\color{blue!60!black}}{\thesubsection}{1em}{}
+  - \titleformat{\subsubsection}{\normalsize\bfseries}{\thesubsubsection}{1em}{}
+
+  - \usepackage{fancyhdr}
+  - \pagestyle{fancy}
+  - \fancyhf{}
+  - \fancyhead[L]{Diabetes Project}
+  - \fancyhead[R]{Group 4}
+  - \fancyfoot[C]{\thepage}
+  - \renewcommand{\headrulewidth}{0.4pt}
+
+  - \setlength{\parskip}{0.5em}
+  - \setlength{\parindent}{0pt}
+---
+
+```{=latex}
+\begin{titlepage}
+\centering
+
+\vspace*{2cm}
+
+{\Huge\bfseries
+MARKOV CHAIN MONTE CARLO METHODS FOR BAYESIAN LINEAR REGRESSION\\[0.4cm]
+FROM THE METROPOLIS ALGORITHM TO GIBBS SAMPLING\\[0.4cm]
+WITH APPLICATION TO THE DIABETES DATASET\\[0.4cm]
+}
+
+\vspace{2cm}
+
+{\Large\textbf{GROUP 4}}
+
+\vfill
+
+A Project Analysis Submitted to the\\
+Department of Statistics\\
+College of Business and Management Sciences\\
+Makerere University
+
+\vspace{2cm}
+
+{\Large\today}
+
+\end{titlepage}
+
+\pagenumbering{roman}
+
+\tableofcontents
+
+\pagenumbering{arabic}
+```
+
+\newpage
+# IMPORTANT PACKAGES
+```{r setup, warning=FALSE, message=FALSE}
+library(mlbench)
+library(tidyverse)
+library(rstanarm)
+library(bayesplot)
+library(GGally)
+library(MCMCpack)
+library(loo)
+library(performance)
+library(naniar)
+library(mice)
+library(car)
+library(lmtest)
+library(glue)
+library(coda)
+library(posterior)
+
+theme_set(theme_bw())
+```
+
+\newpage
+# DATA MANAGEMENT
+## META DATA
+### Pima Indians Diabetes Database
+The **Pima Indians Diabetes Database** is a benchmark dataset widely used in statistical analysis and machine learning for the prediction of diabetes mellitus. It contains clinical measurements collected from female patients of Pima Indian heritage and is commonly used to evaluate classification models. These data have been taken from the **UCI Repository of Machine Learning Databases** (Blake and Merz, 1998) and were converted to R format by Friedrich Leisch in the late 1990s.
+### Dataset Variables
+The dataset consists of **nine variables**, including eight predictor variables and one response variable.
+
+| Variable | Description |
+|:---------|:------------|
+| **pregnant** | Number of times the patient has been pregnant |
+| **glucose** | Plasma glucose concentration obtained from an oral glucose tolerance test |
+| **pressure** | Diastolic blood pressure (mm Hg) |
+| **triceps** | Triceps skin-fold thickness (mm) |
+| **insulin** | Two-hour serum insulin concentration (μU/ml) |
+| **mass** | Body Mass Index (BMI) |
+| **pedigree** | Diabetes pedigree function |
+| **age** | Age of the patient (years) |
+| **diabetes** | Diabetes class (Positive or Negative) |
+
+## IMPORTING DATA AND DATA STRUCTURE
+```{r}
+data(PimaIndiansDiabetes2)
+
+data <- PimaIndiansDiabetes2
+
+str(data)
+```
+
+## EXPLORATORY DATA ANALYSIS
+### CHECKING FOR MISSING VALUES AND DUPLICATE VALUES
+```{r}
+vis_miss(data, 
+         show_perc = TRUE,          
+         show_perc_col = TRUE,
+         cluster = FALSE) + 
+  theme(plot.margin = unit(c(1, 1, 0.5, 0.5), "cm"))
+
+duplicate_count <- sum(duplicated(data))
+cat("Number of exact duplicate rows:", duplicate_count, "\n")
+```
+Insulin has nearly **49%** missing values and triceps has about **30%**, which are substantial levels of missingness while glucose, pressure, and mass had low levels of missingness of **0.65%**, **4.56%**, and **1.43%** respectively. With the overall missingness greater than 5%, dropping them would make us loose a lot of data.
+
+### DESCRIPTIVE STATISTICS BEFORE MISSING VALUES IMPUTATION
+```{r results='asis'}
+numeric_variables <- names(
+  dplyr::select(data, where(is.numeric))
+)
+
+descriptive_table <- purrr::map_dfr(
+  numeric_variables,
+  function(variable_name) {
+    x <- data[[variable_name]]
+    tibble(
+      variable = variable_name,
+      observed_n = sum(!is.na(x)),
+      missing_n = sum(is.na(x)),
+      mean = mean(x, na.rm = TRUE),
+      sd = sd(x, na.rm = TRUE),
+      median = median(x, na.rm = TRUE),
+      q1 = quantile(x, 0.25, na.rm = TRUE),
+      q3 = quantile(x, 0.75, na.rm = TRUE),
+      minimum = min(x, na.rm = TRUE),
+      maximum = max(x, na.rm = TRUE)
+    )
+  }
+)
+
+knitr::kable(
+  descriptive_table,
+  digits = 2,
+  caption = "Observed-data descriptive statistics"
+)
+```
+
+The dataset contains 768 participants. On average, participants had 4 pregnancies, a glucose level of 121.69, blood pressure of 72.41, triceps skinfold thickness of 29.15, insulin level of 155.55, BMI of 32.46, diabetes pedigree function of 0.47, and age of 33 years. Blood pressure, triceps thickness, and BMI appear approximately symmetric because their means and medians are similar, while pregnancies, glucose, insulin, pedigree, and age appear right-skewed because their means exceed their medians. Insulin shows particularly high variability, with values ranging from 14 to 846, while the high maximum values for insulin, triceps, and BMI may indicate potential outliers that should be investigated. Most variables have little or no missing data; however, triceps has 227 missing observations (29.6%) and insulin has 374 (48.7%).
+
+### OUTLIER DECTECTION
+```{r warning=FALSE}
+data_long <- data %>%
+  dplyr::select_if(is.numeric) %>%
+  pivot_longer(cols = everything(),
+               names_to = "variable",
+               values_to = "value")
+
+ggplot(data_long, aes(y = value)) +
+  geom_boxplot(
+    fill = "#0F766E",
+    color = "black",
+    alpha = 0.8,
+    outlier.colour = "red",
+    outlier.fill = "#0F766E"
+  ) +
+  facet_wrap(~variable, scales = "free", ncol = 8) +
+  labs(
+    title = "Univariate Distribution of Continuous Variables",
+    x = NULL,
+    y = "Value"
+  ) +
+  theme_bw() +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.title = element_text(face = "bold"),
+    strip.background = element_rect(fill = "#0F766E"),
+    strip.text = element_text(color = "white", face = "bold"),
+
+    # Remove x-axis labels and ticks
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  )
+```
+
+Glucose is the only variable completely free of outliers. The extreme values for age, pregnant, insulin, mass, pedigree, and triceps are all concentrated on the upper end of their distributions, whereas pressure exhibits outliers on both the lower and upper ends. Much as they are outliers, they are realistic.
+
+## IMPUTATION OF MISSING VALUES
+The missing values were imputed by treating them in the dataset as Missing at Random (MAR). This assumption is supported by the clinical nature of the Pima Indians Diabetes data, where the propensity for missing values-particularly in variables such as BMI and glucose is plausibly related to observed patient characteristics including age and pregnancy status [@cclustr2026consensus].
+
+```{r}
+# Variables to be imputed
+variables_to_impute <- c(
+  "glucose", "pressure", "triceps", "insulin", "mass"
+)
+
+# Specify an imputation method for each variable
+imputation_methods <- make.method(data)
+
+# Do not impute complete variables
+imputation_methods[] <- ""
+
+# Use predictive mean matching for incomplete continuous variables
+imputation_methods[variables_to_impute] <- "pmm"
+
+# Perform multiple imputation
+imputed_object <- mice(
+  data,
+  method = imputation_methods,
+  m = 20,
+  maxit = 50,
+  seed = 123,
+  printFlag = FALSE
+)
+
+# First completed dataset—for descriptive statistics and graphs only
+clean_data <- complete(imputed_object, 1)
+```
+
+
+### CHECKING FOR MISSING VALUES AFTER IMPUTATION
+```{r}
+round(colMeans(is.na(clean_data))*100,2)
+```
+After imputation, there was no missing values in the dataset implying that data is ready for modelling.
+
+### DESCRIPTIVE STATISTICS AFTER MISSING VALUE IMPUTATION
+```{r}
+numeric_variables <- names(
+  dplyr::select(clean_data, where(is.numeric))
+)
+
+descriptive_table <- purrr::map_dfr(
+  numeric_variables,
+  function(variable_name) {
+    x <- clean_data[[variable_name]]
+    tibble(
+      variable = variable_name,
+      observed_n = sum(!is.na(x)),
+      missing_n = sum(is.na(x)),
+      mean = mean(x, na.rm = TRUE),
+      sd = sd(x, na.rm = TRUE),
+      median = median(x, na.rm = TRUE),
+      q1 = quantile(x, 0.25, na.rm = TRUE),
+      q3 = quantile(x, 0.75, na.rm = TRUE),
+      minimum = min(x, na.rm = TRUE),
+      maximum = max(x, na.rm = TRUE)
+    )
+  }
+)
+
+knitr::kable(
+  descriptive_table,
+  digits = 2,
+  caption = "Observed-data descriptive statistics"
+)
+```
+
+
+### CORRELATION CHECK
+```{r, warning=FALSE, message=FALSE}
+ggpairs(
+  clean_data %>%
+    dplyr::select_if(is.numeric),  # Automatically picks all numeric columns
+  
+  # Customize each panel
+  diag = list(
+    continuous = wrap("densityDiag", fill = "#0F766E", alpha = 0.8)
+  ),
+  lower = list(
+    continuous = wrap("points", color = "#0F766E", alpha = 0.5, size = 0.8)
+  ),
+  upper = list(
+    continuous = wrap("cor", colour = "#0F766E", size = 4)
+  )
+) +
+  theme_bw() +
+  theme(
+    strip.background = element_rect(fill = "#0F766E"),
+    strip.text = element_text(color = "white", face = "bold")
+  )
+```
+
+The correlation matrix revealed three notably strong relationships above 0.5, triceps with mass (r = 0.623), glucose with insulin (r = 0.604), and pregnant with age (r = 0.544) which together highlight the interconnected nature of obesity, glucose metabolism, and reproductive history. A broader metabolic syndrome cluster emerges through moderate associations involving glucose, insulin, mass, triceps, and pressure, with age serving as a consistent though weaker driver across most variables (ranging from 0.233 to 0.329). Mass correlates moderately with pressure (0.290) and insulin (0.231), while pressure shares moderate links with glucose, triceps, and mass. pedigree and pregnancy history stand apart from this cluster, showing mostly negligible correlations with metabolic markers pedigree only weakly associates with glucose (0.136), mass (0.153), and age (0.034), while pregnant is virtually uncorrelated with insulin (0.002), mass (0.019), and pedigree (-0.034).
+This also checks the assumption of linearity which is needed to be checked when running an OLS.
+
+### SAVING THE CLEANED DATASET
+```{r}
+write.csv(clean_data, "clean_data.csv", row.names = FALSE)
+```
+
+\newpage
+# DATA MODELLING
+## ASSUMPTIONS CHECK
+### MULTICOLLINEARITY
+Since we did multiple imputation of missing values using **mice**, there are many datasets created and in the cleaned data set, only one data set was chosen. The one datset set chosen is then used for 
+```{r}
+#Model fit
+lm1 <- lm(log(glucose) ~ pregnant +  pressure + triceps +  
+            insulin + pedigree + age, 
+          data = clean_data )
+vif(lm1)
+```
+Since the Variance Inflation Factor is less than 10, there is no evidence of multicollinearity  in our model.
+
+### HOMOSCEDASTICITY
+```{r}
+bptest(lm1)
+```
+Since the P-value is greater than 0.05 at 95% level of confidence, we fail to reject the null hypothesis and conclude that there is homoscedasticity.
+
+### INDEPENCE OF OBSERVATION
+```{r}
+dwtest(lm1)
+```
+There is no statistically significant evidence of positive autocorrelation in the residuals since the **p-value = 0.7371**, this also implies independence of observations.
+
+### RESIDUAL NORMALITY
+```{r}
+qqnorm(
+  residuals(lm1),
+  col = "#0F766E",
+  pch = 19
+)
+
+qqline(
+  residuals(lm1),
+  col = "black",
+  lwd = 2
+)
+```
+The residuals appear to be approximately normal, with some deviations in the tails
+
+## CLASSICAL REGRESSION
+For our final model, we run a pooled linear model that takes all the data sets after imputation.
+```{r}
+# Step 1: Fit your model on ALL 20 imputed datasets simultaneously
+lm1 <- with(imputed_object, 
+            lm(log(glucose) ~ pregnant +  pressure + triceps +  
+                 insulin + pedigree + age )
+)
+
+#Pooled linear model
+lm1_pooled <- pool(lm1)
+
+# Step 3: View the correct coefficients, standard errors, and p-values
+summary(lm1_pooled)
+```
+The linear regression model showed that blood pressure, insulin, and age were statistically significant predictors of log-transformed glucose levels (p<0.05). Holding the other variables constant, an increase in milimeters of mercury in blood pressure, micro-international units per milliliter of insulin, and age in years was associated with approximate increases of 0.24%, 0.11%, and 0.20% in glucose levels, respectively. Among these predictors, insulin exhibited the strongest statistical association with glucose levels (β=0.001139, p<0.001).
+
+The number of pregnancies, triceps skinfold thickness, and diabetes pedigree function were positively associated with glucose levels. A one-unit increase in these variables was associated with approximate increases of 0.22%, 0.17%, and 4.13% in glucose levels, respectively. However, their relationships were not statistically significant—pregnancies (p=0.438), triceps skinfold thickness (p=0.101), and diabetes pedigree function (p=0.108). Therefore, there is insufficient evidence that these variables independently predict glucose levels after adjusting for the other predictors.
+
+The intercept was statistically significant (β=4.2852, p<0.001), although it has limited practical interpretation because it represents the expected log-glucose level when all the predictors equal zero.
+
+
+```{r}
+imp_data <- complete(imputed_object, "all")
+```
+
+
+## BAYESIAN REGRESSION
+```{r}
+# Extract all 20 imputed datasets
+imp_data <- complete(imputed_object, "all")
+
+# Fit the model to each imputed dataset
+bayes_models <- lapply(imp_data, function(d) {
+  
+  stan_glm(
+    log(glucose) ~ pregnant + pressure + triceps +
+      insulin + pedigree + age,
+    data = d,
+    family = gaussian(),
+    chains = 4,
+    iter = 4000,
+    warmup = 2000,
+    seed = 123,
+    refresh = 0
+  )
+})
+
+bayes_pooled <- do.call(
+  rbind,
+  lapply(bayes_models, as.matrix)
+)
+```
+Four MCMC chains were run for 4,000 iterations each, with the first 2,000 iterations used for warm-up. This produced 8,000 post-warm-up posterior draws. All chains completed successfully, with total chain-specific runtimes ranging from approximately 0.70 to 0.92 seconds. This was done in all the twenty datasets
+
+### POSTERIOR SUMMARY
+```{r}
+bayes_summary <- t(apply(bayes_pooled, 2, function(x)
+  c(
+    Mean = mean(x),
+    SD = sd(x),
+    Lower_95 = quantile(x, 0.025),
+    Upper_95 = quantile(x, 0.975)
+  )
+))
+
+round(bayes_summary, 5)
+```
+An additional pregnancy was associated with a 0.22% increase in expected glucose, while an increase in blood pressure in milliliters of mercury, triceps thickness in millimeters and insulin in micro-international units per milliliter were associated with increases of approximately 0.24%, 0.17% and 0.11%, respectively. A one unit increase in the diabetes pedigree function was associated with an estimated 4.20% increase in expected glucose, while each additional year of age was associated with approximately a 0.20% increase. The intercept of 4.285 corresponds to an expected glucose level of approximately 72.6 units when all predictors equal zero.
+
+The 95% credible intervals show that blood pressure, insulin and age have credibly positive associations with glucose because their intervals lie entirely above zero. Holding the other predictors constant, an increase in blood pressure per millimeters of mercury is associated with an estimated increase in glucose of between approximately 0.10% and 0.37%, while an increase in insulin in micro-international unit per milliliter is associated with an increase of approximately 0.10% to 0.13%. Each additional year of age in years is associated with an increase of approximately 0.02% to 0.38%. In contrast, the credible intervals for pregnancy, triceps thickness and diabetes pedigree include zero, meaning the posterior evidence is insufficient to determine whether their associations with glucose are positive or negative. The intercept interval of 4.188 to 4.382 corresponds to a baseline glucose level of approximately 65.9 to 80.0 milligrams per deciliter when all predictors equal zero, although this condition may not be practically meaningful. The residual standard deviation is estimated to lie between 0.188 and 0.210 on the log-glucose scale.
+
+### TRACE PLOTS
+```{r}
+mcmc_trace(
+  as.array(bayes_models[[1]]),
+  pars = c(
+    "pregnant", "pressure", "triceps",
+    "insulin", "pedigree", "age"
+  ),
+  facet_args = list(ncol = 2)
+) +
+  scale_color_manual(
+    values = c("#0F766E", "#14B8A6", "#115E59", "#5EEAD4")
+  ) +
+  labs(
+    title = "Bayesian Regression Trace Plots",
+    x = "Iteration",
+    y = "Posterior draw",
+    color = "Chain"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(color = "#0F766E", face = "bold"),
+    strip.text = element_text(color = "#0F766E", face = "bold"),
+    legend.position = "bottom"
+  )
+```
+The trace plots for all the predictors exhibit stable random fluctuations around constant mean values with no visible upward or downward trends. The chains appear to mix well and consistently explore the posterior distributions. This suggests good convergence of the Markov chains and indicates that the posterior samples are suitable for Bayesian inference, subject to confirmation by other convergence diagnostics. 
+
+### AUTOCORRELATION
+```{r}
+mcmc_acf(
+  as.array(bayes_models[[1]]),
+  pars = c(
+    "pregnant", "pressure", "triceps",
+    "insulin", "pedigree", "age"
+  ),
+  lags = 30
+) +
+  theme_minimal()
+```
+The autocorrelation plots show a sharp decline in autocorrelation after the first lag for all model parameters, with autocorrelation approaching zero as the lag increases. This indicates that successive posterior samples become nearly independent after only a few lags, demonstrating efficient mixing of the Markov chains and good sampling efficiency. The low autocorrelation at higher lags provides evidence that the chains have converged and that the posterior samples are reliable for Bayesian inference
+
+### CONVERGENCE R-hat (GELMAN DIAGNOSTIC CHECK) AND EFFECTIVE SAMPLE SIZE
+```{r echo=TRUE, message=FALSE}
+pars <- c(
+  "pregnant", "pressure", "triceps",
+  "insulin", "pedigree", "age"
+)
+
+diagnostics <- do.call(rbind, lapply(seq_along(bayes_models), function(i) {
+  
+  draws <- as_draws_array(as.array(bayes_models[[i]]))
+  draws <- subset_draws(draws, variable = pars)
+  
+  cbind(
+    Imputation = i,
+    summarise_draws(draws, "rhat", "ess_bulk", "ess_tail")
+  )
+}))
+```
+
+
+```{r}
+diagnostic_summary <- diagnostics %>%
+  group_by(variable) %>%
+  summarise(
+    Maximum_Rhat = max(rhat, na.rm = TRUE),
+    
+    Minimum_Bulk_ESS = min(ess_bulk, na.rm = TRUE),
+    Median_Bulk_ESS = median(ess_bulk, na.rm = TRUE),
+    Mean_Bulk_ESS = mean(ess_bulk, na.rm = TRUE),
+    
+    Minimum_Tail_ESS = min(ess_tail, na.rm = TRUE),
+    Median_Tail_ESS = median(ess_tail, na.rm = TRUE),
+    Mean_Tail_ESS = mean(ess_tail, na.rm = TRUE)
+  )
+
+diagnostic_summary
+```
+
+The maximum R-hat values range from approximately 1.0009 to 1.0023, all well below the recommended threshold of 1.01, showing that the four chains converged to the same posterior distribution. Age recorded the highest R-hat at 1.0023, but this is still very close to 1 and does not indicate a convergence problem. The minimum bulk effective sample sizes range from approximately 5,631 for age to 7,981 for pedigree, while the median bulk ESS values range from approximately 6,396 to 8,874. These large values indicate that the centres of the posterior distributions were estimated efficiently. The minimum tail ESS values also exceed 5,000 for every parameter, showing that the lower and upper credible-interval limits were estimated reliably.
+
+
+### Posterior Predictive Performance
+```{r}
+pp_check(bayes_models[[1]])
+```
+The posterior predictive check shows that the replicated data closely match the observed glucose distribution, indicating that the Bayesian model provides a good fit to the data. Although slight differences are evident in the upper tail and the peak, the overall agreement suggests that the model adequately captures the underlying distribution of glucose levels.
+
+## GIBBS SAMPLING
+```{r}
+# Extract all 20 imputed datasets
+imp_data <- complete(imputed_object, "all")
+
+seeds <- c(123, 456, 577, 789)
+
+# Fit four chains for each imputed dataset
+combined_chains <- lapply(seq_along(imp_data), function(i) {
+  
+  chains <- lapply(seeds, function(s) {
+    
+    MCMCregress(
+      log(glucose) ~ pregnant + pressure + triceps +
+        insulin + pedigree + age,
+      data = imp_data[[i]],
+      burnin = 5000,
+      mcmc = 20000,
+      seed = s + i
+    )
+  })
+  
+  do.call(mcmc.list, chains)
+})
+
+
+gibbs_pooled <- do.call(
+  rbind,
+  lapply(combined_chains, as.matrix)
+)
+
+gibbs_summary <- t(apply(gibbs_pooled, 2, function(x) {
+  c(
+    Mean = mean(x),
+    SD = sd(x),
+    Median = median(x),
+    Lower_95 = quantile(x, 0.025),
+    Upper_95 = quantile(x, 0.975)
+  )
+}))
+
+round(gibbs_summary, 5)
+```
+Blood pressure has a posterior mean of 0.00235, implying approximately a 0.24% increase in expected glucose for every  increase in millimeters of mercury for pressure, with a 95% credible interval of 0.00096 to 0.00370. Insulin is associated with approximately a 0.11% increase in glucose per milligram per deciliter, with a credible interval of 0.00096 to 0.00131, while each additional year of age is associated with approximately a 0.20% increase, with an interval of 0.00016 to 0.00382. Because these three intervals exclude zero, pressure, insulin and age have credibly positive associations with glucose. Pregnancy, triceps thickness and diabetes pedigree have positive posterior means, but their credible intervals include zero, indicating insufficient evidence to establish the direction of their associations. The intercept of 4.285 corresponds to a baseline glucose value of 72.6 milligrams per deciliter when all predictors equal zero, although this scenario may not be practically meaningful.
+
+### EFFECTIVE SAMPLE SIZE
+```{r}
+ess_gibbs <- lapply(combined_chains, effectiveSize)
+
+ess_table <- do.call(rbind, lapply(seq_along(ess_gibbs), function(i) {
+  data.frame(
+    Imputation = i,
+    Parameter = names(ess_gibbs[[i]]),
+    ESS = as.numeric(ess_gibbs[[i]])
+  )
+}))
+```
+
+#### DESCRIPTIVE STATISTICS FOR ESS
+```{r}
+ess_report <- ess_table %>%
+  group_by(Parameter) %>%
+  summarise(
+    Minimum_ESS = min(ESS, na.rm = TRUE),
+    Median_ESS  = median(ESS, na.rm = TRUE),
+    Maximum_ESS = max(ESS, na.rm = TRUE),
+    Mean_ESS = mean(ESS, na.rm = TRUE)
+  )
+
+ess_report
+```
+The Gibbs-sampling effective sample-size diagnostics indicate excellent sampling efficiency across all 20 imputed datasets. The mean ESS values were approximately 80,000 for nearly every parameter, closely matching the total 80,000 retained posterior draws obtained from four chains of 20,000 iterations each. The lowest recorded ESS was 75,804.87 for age, which remains sufficiently large for reliable posterior inference. The regression coefficients generally had minimum ESS values above 77,000, while their median values were approximately 80,000.
+
+### TRACE PLOTS
+```{r, warning=FALSE, message=FALSE}
+pars <- c(
+  "pregnant", "pressure", "triceps",
+  "insulin", "pedigree", "age"
+)
+
+trace_plots <- lapply(seq_along(combined_chains), function(i) {
+  
+  mcmc_trace(
+    as_draws_array(combined_chains[[i]]),
+    pars = pars,
+    facet_args = list(ncol = 2)
+  ) +
+    scale_color_manual(
+      values = c("#14B8A6", "#0F766E" , "#5EEAD4", "#115E59")
+    ) +
+    labs(title = paste("Trace Plot—Imputation", i)) +
+    theme_minimal()
+})
+```
+
+
+```{r}
+trace_plots[[1]]
+```
+
+
+The trace plots for all model parameters display stable random fluctuations around constant mean values without noticeable trends or systematic drift across the iterations. The chains exhibit good mixing and thoroughly explore the posterior distributions, indicating that the Gibbs sampler successfully reached the stationary distribution thus providing strong evidence of convergence and supporting the stability and reliability of the posterior estimates for Bayesian inference.
+
+### GELMAN RUBIN CONVERGENCE DIAGNOSTIC 
+```{r}
+rhat_gibbs <- do.call(rbind, lapply(seq_along(combined_chains), function(i) {
+  
+  x <- gelman.diag(
+    combined_chains[[i]],
+    multivariate = FALSE,
+    autoburnin = FALSE
+  )$psrf
+  
+  data.frame(
+    Imputation = i,
+    Parameter = rownames(x),
+    Rhat = x[, "Point est."],
+    Upper_CI = x[, "Upper C.I."]
+  )
+}))
+```
+
+```{r}
+rhat_report <- rhat_gibbs %>%
+  group_by(Parameter) %>%
+  summarise(
+    Maximum_Rhat = max(Rhat, na.rm = TRUE),
+    Maximum_Upper_CI = max(Upper_CI, na.rm = TRUE)
+  )
+
+rhat_report
+```
+The Gelman Rubin convergence diagnostics provide strong evidence that the Gibbs-sampling chains converged successfully across all 20 imputed datasets. The maximum R-hat values ranged from 1.000067 for age to 1.000139 for the intercept, while the maximum upper confidence limits ranged from 1.000235 to 1.000468. These values are extremely close to the ideal value of 1.00 and well below the recommended convergence threshold of 1.01. This indicates that variation between the four chains was almost identical to variation within each chain. Therefore, the chains mixed well and converged to the same posterior distribution for every regression coefficient and the residual variance parameter.
+
+
+### AUTOCORRELATION
+```{r}
+pars <- c(
+  "pregnant", "pressure", "triceps",
+  "insulin", "pedigree", "age"
+)
+
+acf_plots <- lapply(seq_along(combined_chains), function(i) {
+  
+  mcmc_acf(
+    as_draws_array(combined_chains[[i]]),
+    pars = pars,
+    lags = 30
+  ) +
+    scale_color_manual(
+      values = c("#0F766E", "#14B8A6", "#115E59", "#5EEAD4")
+    ) +
+    labs(title = paste("Autocorrelation—Imputation", i)) +
+    theme_minimal()
+})
+
+acf_plots[[1]]
+```
+The autocorrelation plots show a sharp decline in autocorrelation after the first lag for all model parameters across the four Markov chains, with autocorrelation approaching zero at subsequent lags. This indicates that successive Gibbs samples are nearly independent, reflecting excellent mixing of the chains and highly efficient posterior sampling. The consistently low autocorrelation across all parameters supports the reliability of the posterior estimates and complements the trace plots and Gelman Rubin diagnostic in confirming successful convergence of the Gibbs sampler.
+
+## COMPUTATIONAL TIME
+```{r}
+imp_data <- complete(imputed_object, "all")
+seeds <- c(123, 456, 789)
+
+# Gibbs sampling
+time_gibbs <- system.time({
+  
+  gibbs_models <- lapply(seq_along(imp_data), function(i) {
+    
+    chains <- lapply(seeds, function(s) {
+      MCMCregress(
+        glucose ~ age + mass + pedigree,
+        data = imp_data[[i]],
+        burnin = 5000,
+        mcmc = 20000,
+        seed = s + i
+      )
+    })
+    
+    do.call(mcmc.list, chains)
+  })
+})
+
+# Stan
+time_stan <- system.time({
+  
+  stan_models <- lapply(seq_along(imp_data), function(i) {
+    
+    stan_glm(
+      glucose ~ age + mass + pedigree,
+      data = imp_data[[i]],
+      family = gaussian(),
+      chains = 3,
+      iter = 25000,
+      warmup = 5000,
+      cores = 1,
+      seed = 123 + i,
+      refresh = 0
+    )
+  })
+})
+
+# Runtime comparison
+runtime <- c(
+  Gibbs_seconds = time_gibbs["elapsed"],
+  Stan_seconds = time_stan["elapsed"]
+)
+
+runtime
+```
+
+
+## STRENGTH OF STAN OVER GIBBS SAMPLING
+Stan provides built-in posterior predictive diagnostics (pp_check()), allowing direct assessment of how well the model reproduces the observed data. In contrast, Gibbs sampling with MCMCpack does not provide automatic posterior predictive checks, requiring manual generation of replicated datasets and additional coding. This makes Stan more efficient and user-friendly for model evaluation.
+
+Stan model requires 4000 iterations to achieve an average Effective sample size of 80,000 while Gibbs sampler requires 20,000 iterations to achieve the same average Effective sample size of 80,000
+
+\newpage
+## PREDICTION DASHBOARD
+**https://chrisdanniels.shinyapps.io/diabetes-prediction-dashboard/**
+
+\newpage
+# REFERENCES
+
+
+
+
